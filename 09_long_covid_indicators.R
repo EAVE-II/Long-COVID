@@ -2,7 +2,7 @@
 ## Project: Long COVID
 ## Code author(s): karen.jeffrey@ed.ac.uk 
 ## Description: 09_long_covid_indicators - Descriptive analysis of individuals classified as having long COVID according to
-## our operational defintino, long-COVID Read codes, free text, and sick note free text.
+## our operational definition, long-COVID Read codes, free text, and sick note free text.
 ## Plots counts by month for each outcome variable and prepares a table showing the demographic breakdown.
 #########################################################################################################################
 
@@ -18,7 +18,6 @@ library(readxl)
 library(zoo) # for dates
 library(scales) # for 'label = comma' in ggplot
 library(questionr) # for wtd.table
-library(eavehelpers) # for Q-COVID variable labels
 
 # Code for negation of %in%
 `%!in%` = Negate(`%in%`) 
@@ -79,15 +78,27 @@ rm(GP_raw)
 
 
 # 2. Incorporate operational definition  ----
-opdef <- readRDS("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/6. Long COVID indicators/opdef_classification.rds") %>% # PCR or LFT
-  # Format to match gp data
+opdef <- readRDS("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/6. Long COVID indicators/opdef_classification.rds") # PCR or LFT
+
+
+opdef_1 <- opdef %>%   # Format to match gp data
   rename("gp_dat" = tes_dat, "group" = op_def) %>% 
+  dplyr::select(-op_def_no_blood) %>% 
   mutate(group = "Operational definition") %>% 
   ## Add 28 days to gp_dat for operational definition variables (since they are based on tes_dat) 
   ## Do this to remove some of the lag between opdef and other outcome vars when plotting
   mutate(gp_dat = gp_dat + days(28))
 
-gp <- gp %>% bind_rows(opdef)
+opdef_2 <- opdef %>%   # Format to match gp data
+  rename("gp_dat" = tes_dat, "group" = op_def_no_blood) %>% 
+  dplyr::select(-op_def) %>% 
+  filter(group == 1) %>% 
+  mutate(group = "Operational definition - no blood tests") %>% 
+  ## Add 28 days to gp_dat for operational definition variables (since they are based on tes_dat) 
+  ## Do this to remove some of the lag between opdef and other outcome vars when plotting
+  mutate(gp_dat = gp_dat + days(28))
+
+gp <- gp %>% bind_rows(opdef_1, opdef_2)
 
 rm(opdef)
 
@@ -97,7 +108,12 @@ first_indicator <- gp %>%
   arrange(gp_dat) %>% 
   group_by(EAVE_LINKNO, group) %>% 
   slice(1) %>% 
-  ungroup() %>% 
+  ungroup() 
+
+## Export for use in prediction modelling
+saveRDS(first_indicator, "Outcome measure dates.rds")
+
+first_indicator <- first_indicator %>% 
   # Get counts per month
   dplyr::select(-EAVE_LINKNO) %>% 
   mutate(gp_dat = as.yearmon(gp_dat, "%m/%Y"))%>% 
@@ -153,6 +169,7 @@ rm(first_indicator, first_valid, first_indicator_or_valid)
 
 # Recode 'group' using labels that will show in plot legends
 individuals_relabelled <- individuals_data %>% 
+  filter(group != "Operational definition - no blood tests") %>% 
   mutate(group = recode(group, 
                         'Free text'='Long-COVID in free text', 
                         'Free text - fitnote'='Long-COVID on sick note',
@@ -242,6 +259,7 @@ df <- df_raw %>%
          `Long-COVID clinical code` = ifelse(is.na(`Long Covid`), 0, `Long Covid`),
          `Long-COVID code, free text or sick note` = ifelse(`Long-COVID on sick note` > 0 | `Long-COVID in free text` > 0 | `Long-COVID clinical code` > 0, 1, 0),
          `Operational definition` = ifelse(is.na(`Operational definition`), 0, `Operational definition`),
+         `Operational definition - no blood tests` = ifelse(is.na(`Operational definition - no blood tests`), 0, `Operational definition - no blood tests`),
          `Any outcome measure` = ifelse(`Operational definition` > 0 |  `Long-COVID code, free text or sick note` > 0, 1, 0)) %>% 
   dplyr::select(-c(`Free text - fitnote`, `Free text`, `Long Covid`))#, `Operational definition (PCR)`))
 
@@ -274,81 +292,45 @@ df <- df %>%
 
 ## 3.3 Vaccination doses ----
 ## This will be presented as number of doses up to 14 days before each outcome measure was recorded (won't be presented for full population)
-vac_raw <- readRDS("/conf/EAVE/GPanalysis/data/cleaned_data/C19vaccine_dvprod_cleaned.rds") 
+vac_raw <- readRDS("/conf/EAVE/GPanalysis/data/temp/vaccine_cleaned.rds")  # cleaned file prepared by Vera @ PHS
 
-## Get first of tes_dat or gp_dat for individuals with any outcome measure (so we can count vaccinations by 14 days before then)
-gp_dat <- gp %>% 
-  ## 28 days was added to operational definition earlier on - take it off again
-  mutate(gp_dat = ifelse(group == 'Operational definition', gp_dat - days(28), gp_dat),
-         gp_dat = as.Date(gp_dat, origin = "1970-01-01")) %>% 
-  ## Get date of first outcome measure
-  group_by(EAVE_LINKNO) %>% 
-  arrange(gp_dat) %>% 
-  slice(1) %>% 
-  ungroup()
+## Prepare vac data
+vac <- vac_raw %>% 
+  ## Select vars of interest
+  dplyr::select(c(EAVE_LINKNO, starts_with("date_vacc")))
 
-## Clean up vaccinations data
-vac_clean <- vac_raw %>% 
-  # Select variables of interest
-  dplyr::select(EAVE_LINKNO, 
-         vac_dos = vacc_dose_number,
-         vac_dat = vacc_occurence_date,
-         vac_typ = vacc_product_name) %>% # for cleaning
-  # Rename vaccine types
-  mutate(vac_typ = case_when(vac_typ == "Covid-19 Vaccine AstraZeneca" ~ "AZ",
-                             vac_typ == "Covid-19 mRNA Vaccine Pfizer" ~ "PB",
-                             vac_typ == "Covid-19 mRNA Vaccine Moderna" ~ "Mo",
-                             TRUE ~ "Unknown")) %>% 
-  # Keep only EAVE_LINKNOs in gp_dat
-  filter(EAVE_LINKNO %in% gp_dat$EAVE_LINKNO) %>% 
-  # Remove duplicates (by EAVE_LINKNO --AND-- dose number)
-  group_by(vac_dos) %>% 
-  filter(!duplicated(EAVE_LINKNO)) %>% 
-  ungroup %>% 
-  # Transpose (one row per individual)
-  pivot_wider(id_cols = EAVE_LINKNO,
-              names_from = vac_dos,
-              values_from = c(vac_dat, vac_typ)) %>% 
-  ## Flag vaccinations 1 & 2 <18 days apart
-  mutate(vac_gap_1 = as.numeric(date(vac_dat_2) - date(vac_dat_1)), 
-         vac_incon = ifelse(vac_gap_1 <19 & !is.na(vac_gap_1), 1, 0)) %>% 
-  ### Flag no record of earlier doses
-  mutate(vac_incon = ifelse((is.na(vac_typ_1) & (!is.na(vac_typ_2) | !is.na(vac_typ_3) | !is.na(vac_typ_4))) |    # No first dose, but subsequent doses
-                           ((is.na(vac_typ_1) | is.na(vac_typ_2)) & (!is.na(vac_typ_3) | !is.na(vac_typ_4))) |    # No first or second dose, but subsequent doses
-                           ((is.na(vac_typ_1) | is.na(vac_typ_2) | is.na(vac_typ_3)) & !is.na(vac_typ_4)), 1, 0)) # No first, second, or third dose, but subsequent doses
+## Pivot longer
+vac <- pivot_longer(vac,
+                    cols = date_vacc_1:date_vacc_sb,
+                    values_to = "vac_dat")
 
-
-## Keep track of EAVE_LINKNOs cleaned out due to inconsistencies so we can distinguish between 0 doses (not in vaccinations file) and 
-## unknown (filtered out during cleaning)
-vac_unknown <- vac_clean %>% 
-  filter(vac_incon > 0) %>% 
-  dplyr::select(EAVE_LINKNO)
-
-## Continue cleaning...
-vac <- vac_clean %>% 
-  ## Keep data with no inconsistencies
-  filter(vac_incon == 0) %>%
-  ## Transpose to long form 
-  pivot_longer(cols = c(vac_dat_1:vac_dat_6), # columns that should pivot from wide to long (unquoted)
-               names_to = "vac_dos", # name of the new category column as a quoted string
-               values_to = "vac_dat") %>% # name of the new value column as a quoted string)
+## Clean up
+vac <- vac %>% 
+  dplyr::select(-name) %>% 
   filter(!is.na(vac_dat)) %>% 
-  dplyr::select(EAVE_LINKNO, vac_dat) %>% 
-  # Keep vaccinations administered after 1st December 2020 (when rollout began) and up to 14 days before first of positive test or outcome measure
+  filter(vac_dat <= "2022-10-20")
+
+# Count vaccine doses by 14 days before tes_dat (if individual is identified by operational defintion), 
+# or by 14 days before outcome date (if identified by clinical code/free text)
+
+## Get date of first recorded outcome measure (opdef/free text etc.)
+gp_dat <- gp %>% 
+  arrange(gp_dat) %>% 
+  distinct(EAVE_LINKNO, .keep_all = T)
+
+vac_n <- vac %>% 
+  filter(EAVE_LINKNO %in% df$EAVE_LINKNO) %>% 
   left_join(dplyr::select(gp_dat, EAVE_LINKNO, gp_dat), by = "EAVE_LINKNO") %>% 
-  filter(vac_dat >= "2020-12-01" & vac_dat < (gp_dat - days(14))) %>% 
-  # Get n
+  filter(vac_dat < (gp_dat - days(14))) %>% 
   group_by(EAVE_LINKNO) %>% 
   summarise(vac_dos = n())
 
-## Join vaccine doses to df & distinguish between 0 doses (not in vaccinations file) and unknown (filtered out during cleaning)
+# Replace in df
 df <- df %>% 
-  left_join(vac, by = "EAVE_LINKNO") %>% 
-  mutate(vac_dos = ifelse(is.na(vac_dos), 0, vac_dos), # Mark missing values as 0
-         vac_dos = ifelse(EAVE_LINKNO %in% vac_unknown$EAVE_LINKNO, "Unknown", vac_dos),  # If cleaned out, mark as "Unknown" (due to inconsistent data)
-         vac_dos = ifelse(EAVE_LINKNO %!in% gp_counts$EAVE_LINKNO, NA, vac_dos)) # Mark as NA if not an individual with an outcome variable (didn't count doses for them)
-  
-rm(vac_raw, vac, vac_unknown)
+  left_join(vac_n, by = "EAVE_LINKNO") %>% 
+  mutate(vac_dos = ifelse(is.na(vac_dos), 0L, vac_dos))  
+
+rm(vac_raw, vac, vac_n)
 
 
 ## 3.4 Severity of acute infection (admitted to hospital or ICU within 28 days of testing positive) ----
@@ -373,7 +355,7 @@ severe <- hos %>%
 df$severe <- ifelse(df$EAVE_LINKNO %in% severe$EAVE_LINKNO, 1, 0)
 
 
-## 4. Descriptive stats - table ----
+# 4. Descriptive stats - table ----
 ## Calculate descriptives
 calculate_descriptives <- function(df, 
                                    mask, # mask = the subset of interest e.g. df$`Operational definition` > 0
@@ -681,18 +663,30 @@ Q_descriptives <- function(df, mask){ # mask = the subset of interest e.g. df$`O
   ## Labels
   labels <- "Total (% of population)"
   
-  for(var in q_vars){
-    lab <- eavehelpers::get_label(var)
-    labels <- c(labels, lab)
-    
-  }
+  q_vars[q_vars == "Q_DIAG_DIABETES_1"] <- "Diabetes Type I"
+  q_vars[q_vars == "Q_DIAG_DIABETES_2"] <- "Diabetes Type II"
+  q_vars[q_vars == "Q_DIAG_AF"] <- "Atrial fibrillation"
+  q_vars[q_vars == "Q_DIAG_ASTHMA"] <- "Asthma"
+  q_vars[q_vars == "Q_DIAG_BLOOD_CANCER"] <- "Haematological cancer"
+  q_vars[q_vars == "Q_DIAG_CCF"] <- "Heart failure"
+  q_vars[q_vars == "Q_DIAG_CHD"] <- "Coronary heart disease"
+  q_vars[q_vars == "Q_DIAG_COPD"] <- "Chronic obstructive pulmonary disease (COPD)"
+  q_vars[q_vars == "Q_DIAG_DEMENTIA"] <- "Dementia"
+  q_vars[q_vars == "Q_DIAG_EPILEPSY"] <- "Epilepsy"
+  q_vars[q_vars == "Q_DIAG_FRACTURE"] <- "Fracture"
+  q_vars[q_vars == "Q_DIAG_NEURO"] <- "Neurological disorder"
+  q_vars[q_vars == "Q_DIAG_PARKINSONS"] <- "Parkinson’s disease"
+  q_vars[q_vars == "Q_DIAG_PULM_HYPER"] <- "Pulmonary hypertension"
+  q_vars[q_vars == "Q_DIAG_PULM_RARE"] <- "Rare pulmonary disease"
+  q_vars[q_vars == "Q_DIAG_PVD"] <- "Peripheral vascular disease"
+  q_vars[q_vars == "Q_DIAG_RA_SLE"] <- "Rheumatoid arthritis or systemic lupus erythematous (SLE)"
+  q_vars[q_vars == "Q_DIAG_RESP_CANCER"] <- "Respiratory cancer"
+  q_vars[q_vars == "Q_DIAG_SEV_MENT_ILL"] <- "Severe mental illness"
+  q_vars[q_vars == "Q_DIAG_STROKE"] <- "Stroke/Transient Ischaemic Attack (TIA)"
+  q_vars[q_vars == "Q_DIAG_VTE"] <- "Thrombosis or pulmonary embolus"
+  q_vars[q_vars == "Q_DIAG_CKD_LEVEL"] <- "Chronic Kidney disease (level 3+)"
   
-  ### Edit labels
-  labels[labels =="Kidney disease"] <- "Kidney disease (level 3+)"
-  labels[labels =="Parkinson’s"] <- "Parkinsons"
-  labels[labels == "Diabetes Type I-II and Pre-diabetes"] <- "Diabetes Type I" # the original label relates to a later verison of the Q data
-  labels[labels == "Rare diabetes"] <- "Diabetes Type II" # the original label relates to a later verison of the Q data
-  labels <- gsub("indicator", "", labels) # remove "indicator" from the end of labels
+  labels <- c(labels, q_vars)
   
   ## Combine
   results <- cbind(labels, N, PC)
@@ -727,10 +721,10 @@ View(Q_stats)
 write_csv(Q_stats, "Summary stats - Q.csv")
 
 
-## 6. Healthboard - table ----
+# 6.1 Health board table ----
 ## Get hb labels
 df <- df %>% 
-  mutate(hb = case_when(hb == "S08000015" ~ "NHS Ayrshire and Arran",
+  mutate(hb_lab = case_when(hb == "S08000015" ~ "NHS Ayrshire and Arran",
                         hb == "S08000016" ~ "NHS Borders",
                         hb == "S08000017" ~ "NHS Dumfries and Galloway",
                         hb == "S08000029" ~ "NHS Fife",
@@ -760,7 +754,7 @@ hb_descriptives <- function(df, mask){ # mask = the subset of interest e.g. df$`
   df <- df %>% filter(mask)
   
   ## Get N by hb
-  hb_tab <- table(factor(df$hb, levels = hbs))
+  hb_tab <- table(factor(df$hb_lab, levels = hbs))
   hb1_n<-  hb_tab[1]
   hb2_n<-  hb_tab[2]
   hb3_n<-  hb_tab[3]
@@ -836,51 +830,62 @@ View(hb_stats)
 write_csv(hb_stats, "Healthboard stats.csv")
 
 
+# 7. Export df (for use in prediction modelling) ----
+saveRDS(df, "/conf/EAVE/GPanalysis/analyses/long_covid/data/LongCOVID_predict.rds", compress = TRUE)
 
-# 7. Validation ----
+
+# 8. Validation ----
 ## How well does our definition identify individuals who we're confident have/have had long-COVID? 
 round(prop.table(table(df$`Operational definition`, df$`Long-COVID code, free text or sick note`))*100,2)
-# True negatives: 98.2%
+# True negatives: 98.3%
 # True positives: 0.1%
-# Op def, not validation: 1.3%
-# Validation, not op def: 0.3%
+# Op def, not validation: 1.2%
+# Validation, not op def: 0.4%
+
+## Check for opdef without blood tests
+round(prop.table(table(df$`Operational definition - no blood tests` > 0, df$`Long-COVID code, free text or sick note`))*100,2)
+# True negatives: 98.3%
+# True positives: 0.1%
+# Op def, not validation: 1.2%
+# Validation, not op def: 0.4%
+
 
 ## As above, but for working age adults
 round(prop.table(table(df$`Operational definition`[df$age<=66], df$`Long-COVID code, free text or sick note`[df$age<=66]))*100,2)
-# True negatives: 97.94%
-# True positives: 0.17%
-# Op def, not validation: 1.45%
-# Validation, not op def: 0.43%
+# True negatives: 98.1%
+# True positives: 0.2%
+# Op def, not validation: 1.3%
+# Validation, not op def: 0.4%
 
 ## Validation against Long COVID read code OR Long COVID term in GP free text OR term in sick note free text
 print("All validation measures")
 df_valid <- df[df$`Long-COVID code, free text or sick note`> 0,]
-round(prop.table(table(df_valid$`Operational definition` > 0))*100,1) # 27.4% are identified by the operational defintion
+round(prop.table(table(df_valid$`Operational definition` > 0))*100,1) # 27.0% are identified by the operational defintion
 
 ## Validation against Long COVID Read code
 print("Long COVID Read code")
 df_lc_read <- df[df$`Long-COVID clinical code` > 0,]
-round(prop.table(table(df_lc_read$`Operational definition` > 0))*100,1) # 19.4% are identified by the operational defintion
+round(prop.table(table(df_lc_read$`Operational definition` > 0))*100,1) # 19.3% are identified by the operational defintion
 
 ## Validation against Long COVID term in GP free text
 print("Long COVID in free text")
 df_text <- df[df$`Long-COVID in free text` > 0,]
-round(prop.table(table(df_text$`Operational definition` > 0))*100,1) # 21.5% are identified by the operational defintion
+round(prop.table(table(df_text$`Operational definition` > 0))*100,1) # 21.6% are identified by the operational defintion
 
 ## Validation against Long COVID term in sick note free text
 print("Long COVID in fitnote free text")
 df_note <- df[df$`Long-COVID on sick note` > 0,]
-round(prop.table(table(df_note$`Operational definition` > 0))*100,1) # 32% are identified by the operational defintion
+round(prop.table(table(df_note$`Operational definition` > 0))*100,1) # 31.3% are identified by the operational defintion
 
 
 # What's the overlap between our operational definition and our concrete measures of long-COVID?
 print("Classified as having long COVID AND have a validation measure")
 df_op_def <- df[df$`Operational definition` > 0,]
-round(prop.table(table(df_op_def$`Long-COVID code, free text or sick note` > 0))*100,1) # 8.7% of those identified by the operational defintion are identified
+round(prop.table(table(df_op_def$`Long-COVID code, free text or sick note` > 0))*100,1) # 9.8% of those identified by the operational defintion are identified
                                                                                         # by another outcome measure
 
-# 7.2 Validation plot ----
-## Export data for Sid
+# 9. Validation plot (Sid's code) ----
+## Prepare data for Sid
 val_plot_df <- df %>% 
   dplyr::select(EAVE_LINKNO, old_EAVE_LINKNO, council, hb, `Long-COVID clinical code`, `Long-COVID in free text`, `Long-COVID on sick note`, `Operational definition`) %>% 
   mutate(`Any outcome measure` = ifelse(`Long-COVID clinical code` > 0 |
@@ -889,8 +894,97 @@ val_plot_df <- df %>%
                                         `Operational definition`> 0, 1, 0))
 
 
-saveRDS(val_plot_df, "LongCOVID_classification.rds")
+# Sid's code
+library(networkD3)
+library(tidygraph)
+library(ggalluvial)
+library(igraph)
+
+# Read in df with counts of outcomes in each period  
+# * note this read in positive and negative cases only
+dfRAW <- val_plot_df 
+rm(val_plot_df)
+#df <- dfRAW %>% select(`Long-COVID clinical code`, `Long-COVID in free text`, `Long-COVID on sick note`, `Operational definition`, `Any outcome measure`)
+df <- dfRAW
+df$`Long-COVID clinical code`[df$`Long-COVID clinical code` > 1] <- 1
+df$`Long-COVID in free text`[df$`Long-COVID in free text` > 1] <- 1
+df$`Long-COVID on sick note`[df$`Long-COVID on sick note` > 1] <- 1
+df$`Operational definition`[df$`Operational definition` > 1] <- 1
+df$`Any outcome measure`[df$`Any outcome measure` > 1] <- 1
+
+dfgraph <- df %>% 
+  dplyr::select(`Long-COVID clinical code`, `Long-COVID in free text`, `Long-COVID on sick note`, `Operational definition`, `Any outcome measure`) #%>% 
+#   count(`Long-COVID clinical code`, `Long-COVID in free text`, `Long-COVID on sick note`, `Operational definition`, `Any outcome measure`)
+# colSums(df)
+
+# create adjacency matrix and then plot with circlize library
+nc = ncol(dfgraph)
+nr = nrow(dfgraph)
+m3b <- matrix(0, nrow=nc, ncol=nc)
+for(i in seq(1,nc)){
+  for(j in seq(1,nc)){
+    t3 <- table(dfgraph[,i], dfgraph[,j])
+    m3b[i,j] = t3[2,2]
+  }
+}
+#m3b <- m3b[,-(1:2)]/1e03
+m3df <- data.frame(
+  order=1:5,
+  classes = c("Long-COVID clinical code", "Long-COVID in free text", "Long-COVID on sick note", "Operational definition", "Any outcome measure"), 
+  m3b,
+  r = c(255,255,255,153, 51),
+  g = c(51, 153, 255, 255, 255),
+  b = c(51, 51, 51, 51, 153),
+  stringsAsFactors = FALSE)
+
+refdf <- m3df[, c(1,2, 8:10)]
+
+dimnames(m3b) <- list(orig=m3df$classes, dest = m3df$classes)
+#Sort order of data.frame and matrix for plotting in circos
+m3df <- arrange(m3df, order)
+m3df$classes <- factor(m3df$classes, levels = m3df$classes)
+m3b <- m3b[levels(m3df$classes),levels(m3df$classes)]
+
+### Define ranges of circos sectors and their colors (both of the sectors and the links)
+m3df$xmin <- 0
+m3df$xmax <- rowSums(m3b) + colSums(m3b)
+n <- nrow(m3df)
+m3df$rcol<-rgb(m3df$r, m3df$g, m3df$b, max = 255)
+m3df$lcol<-rgb(m3df$r, m3df$g, m3df$b, alpha=200, max = 255)
+border_mat <- matrix("red", nrow = 1, ncol = ncol(m3b))
+rownames(border_mat) = rownames(m3b)[4]
+colnames(border_mat) = colnames(m3b)
+
+library(circlize)
+png(
+  "/conf/EAVE/GPanalysis/analyses/long_covid/outputs/6. Long COVID indicators/symmetricmyplot.png",
+  width     = 6,
+  height    = 4,
+  units     = "in",
+  res       = 1200,
+  pointsize = 5
+)
+circos.par(gap.degree = 8)
+chordDiagram(m3b, grid.col = 1:5, symmetric = TRUE, directional = TRUE, annotationTrack = "grid",
+             preAllocateTracks = list(list(track.height = 0.05),
+                                      list(track.height = 0.05)),
+             link.lwd = 2, link.lty = 2, link.border = border_mat)
+circos.trackPlotRegion(track.index = 1, panel.fun = function(x, y) {
+  xlim = get.cell.meta.data("xlim")
+  ylim = get.cell.meta.data("ylim")
+  sector.index = get.cell.meta.data("sector.index")
+  theta = circlize(mean(xlim), 1.3)[1, 1] %% 360
+  dd <- ifelse(theta < 90 || theta > 270, "downward", "downward")
+  aa = c(1, 0.5)
+  if(theta < 90 || theta > 270)  aa = c(0, 0.5)
+  circos.text(x=mean(xlim), y=1, labels=sector.index, facing = dd, cex=0.8,  adj = aa)
+  #circos.text(mean(xlim), mean(ylim), sector.index, facing = "downward", cex = 1, niceFacing = TRUE)
+}, bg.border = NA)
+circos.trackPlotRegion(track.index = 2, panel.fun = function(x, y) {
+  circos.axis("bottom", major.tick.length = 0.2, labels.cex = 0.4)
+}, bg.border = NA)
+circos.clear()
+dev.off()
 
 
-# 8. Export df (for use in prediction modelling) ----
-saveRDS(df, "/conf/EAVE/GPanalysis/analyses/long_covid/data/LongCOVID_predict.rds", compress = TRUE)
+

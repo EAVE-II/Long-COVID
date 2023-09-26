@@ -227,10 +227,11 @@ setwd("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/5. Cluster analysis/K-m
 
 ## Set parameters
 k=12 # Max number of clusters to create
-
 kmeds_neg_4 <- k_medoids(df_neg_4$df, k) 
 write_csv(kmeds_neg_4, "k-medoids - pos vs neg - 4-12 weeks.csv") # optimal silhouette width  = 2 clusters; optimal Dunn index = 6 clusters
 
+
+k=11 # Max number of clusters to create (can't use 12 - not enough indicators)
 kmeds_neg_12 <- k_medoids(df_neg_12$df, k)
 write_csv(kmeds_neg_12, "k-medoids - pos vs neg - 12-26 weeks.csv") # optimal silhouette width  = 2 clusters; optimal Dunn index = 4 clusters
 
@@ -359,7 +360,8 @@ plot_ggdendro <- function(hcdata,
 # 5. Hierarchical clustering ----
 # https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/hclust
 # https://www.datacamp.com/tutorial/hierarchical-clustering-R 
-hierarchical <- function(df, # e.g. df_neg_4
+hierarchical <- function(K, # max number of clusters
+                         df, # e.g. df_neg_4
                          name, # detail included in the names of exported files e.g. "pos vs neg - 4-12 weeks"
                          dist_method, # method used for calculating dissimilarities between observations
                          cluster_method){  # method to be used for clustering e.g. "ward.D" - uses increases in the error sum of squares to determine which clusters should be fused
@@ -374,7 +376,7 @@ hierarchical <- function(df, # e.g. df_neg_4
   sil_means <- NULL
   
   # Get optimal silhouette width
-  for(k in 2:12){
+  for(k in 2:K){
     
     # Get silhouette width of each cluster
     sil_width <- silhouette(cutree(fit, k = k), dist = d)[, 3]
@@ -384,7 +386,7 @@ hierarchical <- function(df, # e.g. df_neg_4
     
   }
   
-  sil_means_tab <- as.data.frame(cbind("K" = c(2:12), "Sil" = sil_means))
+  sil_means_tab <- as.data.frame(cbind("K" = c(2:K), "Sil" = sil_means))
   print(sil_means_tab)
   
   # Get k that maximises silhouette width
@@ -419,8 +421,8 @@ dist_method <- "gower"
 cluster_method <- "ward.D2" 
 
 ## Run analysis and export plots and tables (check objects' elements using $fit, $dend, $cluster_membership, $dend_k)
-hier_neg_4 <- hierarchical(df_neg_4$df, name = "pos vs neg - 4-12 weeks", dist_method, cluster_method) # Positive vs negative, 4-12 weeks
+hier_neg_4 <- hierarchical(K = 12, df_neg_4$df, name = "pos vs neg - 4-12 weeks", dist_method, cluster_method) # Positive vs negative, 4-12 weeks
 
-hier_neg_12 <- hierarchical(df_neg_12$df, name = "pos vs neg - 12-26 weeks", dist_method, cluster_method) # Positive vs negative, >12-26 weeks
+hier_neg_12 <- hierarchical(K = 11, df_neg_12$df, name = "pos vs neg - 12-26 weeks", dist_method, cluster_method) # Positive vs negative, >12-26 weeks
 
 

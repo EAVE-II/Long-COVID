@@ -3,8 +3,9 @@
 ## Code author(s): karen.jeffrey@ed.ac.uk 
 ## Description: 08_classification_and_validation - Classifies individuals as having long-COVID or not according to our 
 ## operatinal definition and checks for agreement with unambiguous indicators of long-COVID (Read code, free text, free 
-## text on sick note). For sensitivity, repeats this analysis based on symptoms that were significantly higher at 12-26
-## weeks only, and identifies cases as having long COVID based on symptoms recorded at 12-26 weeks only.
+## text on sick note). For sensitivity, (i) repeats this analysis based on symptoms that were significantly higher at 12-26
+## weeks only, and identifies cases as having long COVID based on symptoms recorded at 12-26 weeks only, and (ii) excludes
+## blood tests from the operational definition.
 #########################################################################################################################
 
 # Clear environment 
@@ -19,7 +20,8 @@ library(corrplot)
 # Read in df with counts of outcomes in each period for positive cases  
 # NOTE: the raw data contains positive and negative cases only i.e. does not include 'not yet tested'
 df_raw <- readRDS("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/5. Cluster analysis/df_cluster_LFT.rds") %>% # counts of vars for PCR & LFT positive, prepared in 06_matched_analysis
-  filter(tes_res == "POSITIVE") 
+  filter(tes_res == "POSITIVE") %>% 
+  distinct(EAVE_LINKNO, .keep_all = T)
 
 # Read in all variables that are significantly higher for positive cases
 all_vars <- read.csv("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/3. Regression outputs/2. Matched analysis/Significantly higher outcomes.csv") %>% 
@@ -77,12 +79,14 @@ df <- df %>%
 
 # 3. Classify individuals as having long-COVID or not according to our operational definition ----
 ## Classify variables according to our 3 categories
-symptoms <- c("Fatigue", "Breathless", "Taste and Smell", "Consult Mental Health") 
-investigations <- c(all_vars[grepl("Blood", all_vars)], "Chest Xray", "Echocardiogram") 
+### Both periods
+symptoms <- c("Fatigue", "Breathless", "Taste and Smell", "Chest Pain") 
+investigations <- c(all_vars[grepl("Blood", all_vars)], "Chest Xray") 
 pres_sick <- c(setdiff(all_vars, c(symptoms, investigations)))
 
-symptoms12 <- symptoms[symptoms != "Consult Mental Health"]
-investigations12 <- investigations[investigations != "Blood Tests Biochem" & investigations != "Echocardiogram"] 
+### 12-26 weeks only
+symptoms12 <- symptoms[symptoms != "Chest Pain"]
+investigations12 <- investigations[investigations != "Blood Tests Biochem"] 
 pres_sick12 <- pres_sick[pres_sick != "Corticosteroids (respiratory)" & pres_sick != "Tetracyclines" & pres_sick != "Coronavirus"]
 
 ## Check
@@ -121,18 +125,28 @@ df12$pres_sick <- count_outcome_types(df12, pres_sick12)
 df$indicators <- df$symptoms + df$investigations + df$pres_sick
 df$op_def <- ifelse(df$indicators >1, 1, 0)
 table(df$op_def)
-round(prop.table(table(df$op_def))*100,1) # 5.1% of positive cases
+round(prop.table(table(df$op_def))*100,1) # 4.5% of positive cases
 
 df12$indicators <- df12$symptoms + df$investigations + df$pres_sick
 df12$op_def12 <- ifelse(df12$indicators >1, 1, 0)
 table(df12$op_def12)
-round(prop.table(table(df12$op_def12))*100,1) # 3.9% of positive cases
+round(prop.table(table(df12$op_def12))*100,1) # 3.8% of positive cases
 
 ## Join op_def12 to df
 df <- df %>% 
+  distinct(EAVE_LINKNO, .keep_all = T) %>% 
   left_join(dplyr::select(df12, EAVE_LINKNO, op_def12), by = "EAVE_LINKNO")
 
-## Check overlap: 55210 of (55210+18465) = 74.9% of cases identified using only those symptoms that are sig higher at 12-26 weeks AND recorded at 12-26 weeks
+
+## Repeat excluding blood tests from investigations (i.e. chest xray only) for sensitivity
+investigations_no_blood <- c("Chest Xray")
+df$investigations_no_blood <- count_outcome_types(df, investigations_no_blood)
+df$indicators_no_blood <- df$symptoms + df$investigations_no_blood + df$pres_sick
+df$op_def_no_blood <- ifelse(df$indicators_no_blood >1, 1, 0)
+table(df$op_def_no_blood)
+round(prop.table(table(df$op_def_no_blood))*100,1) # 4.5% of positive cases
+
+## Check overlap: 54,531 of (54,531 + 9,662) = 84.9% of cases identified using only those symptoms that are sig higher at 12-26 weeks AND recorded at 12-26 weeks
 xtab <- table(df$op_def, df$op_def12)
 xtab
 xtab[2,2]/(xtab[2,1] + xtab[2,2])
@@ -140,6 +154,50 @@ xtab[2,2]/(xtab[2,1] + xtab[2,2])
 # 4. Export data ----
 op_def_df <- df %>% 
   filter(op_def == 1) %>% 
-  dplyr::select(EAVE_LINKNO, tes_dat, op_def) 
+  dplyr::select(EAVE_LINKNO, tes_dat, op_def, op_def_no_blood) 
 
 write_rds(op_def_df, "/conf/EAVE/GPanalysis/analyses/long_covid/outputs/6. Long COVID indicators/opdef_classification.rds")
+
+rm(df_raw, df12, op_def_df)
+
+# 5. Investigate frequency and co-occurrence of indicators used in operational defintion ----
+op_df <- df %>% 
+  filter(op_def == 1) %>% 
+  dplyr::select(-c(tes_dat, op_def_no_blood))
+
+## Get proportion with symptoms, investigations, management
+prop.table(table(op_df$symptoms==1))*100 # 47.8%
+prop.table(table(op_df$investigations==1))*100 # 95.1%
+prop.table(table(op_df$pres_sick==1))*100 # 65.6%
+
+## Get number of times each variable appears
+counts <- op_df %>% 
+  select(-c("EAVE_LINKNO", "op_def", "indicators", "op_def12", "investigations", "pres_sick", "symptoms"))
+counts <- as.data.frame(colSums(counts != 0))
+colnames(counts) <- c("Count")
+counts$label <- rownames(counts)
+counts <- counts %>% arrange(Count)
+
+opdef_elements <- ggplot(counts, aes(x = reorder(label, Count), y = Count)) + 
+                    geom_bar(stat = "identity")+ 
+                    geom_text(aes(label=Count), vjust=0.4, color="black", size=3) + 
+                    coord_flip() +
+                    theme(axis.title.y=element_blank())
+   
+  
+ggsave("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/6. Long COVID indicators/opdef_element_counts.png", 
+       opdef_elements,
+       width = 8,
+       height = 8,
+       units = "in")
+
+## Get correlations between variables
+cor_counts <- df %>% 
+  select(-c("EAVE_LINKNO", "op_def", "indicators", "op_def12", "investigations", "pres_sick", "symptoms"))
+
+cor_counts[cor_counts > 1] <- 1 # Binarize
+
+cor_mat <- cor(cor_counts, method = "s") # use Spearman's correlation, given binary
+
+corrplot(cor_mat, method = 'circle', diag = F,    
+         tl.cex = 0.6, tl.col = "black", mar = c(0,0,0,0))

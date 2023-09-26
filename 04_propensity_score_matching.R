@@ -58,53 +58,26 @@ icu <- readRDS("/conf/EAVE/GPanalysis/data/SICSAG_episode_level_.rds") %>%
   filter(icu_dat <= max(df_neg$tes_dat))
 
 # Vaccinations
-vac_raw <- readRDS("/conf/EAVE/GPanalysis/data/cleaned_data/C19vaccine_dvprod_cleaned.rds") 
-
-## Clean up vaccinations data
+vac_raw <- readRDS("/conf/EAVE/GPanalysis/data/temp/vaccine_cleaned.rds")  # cleaned file prepared by Vera @ PHS
+ 
+## Prepare vac data
 vac <- vac_raw %>% 
-  # Select variables of interest
-  select(EAVE_LINKNO, 
-         vac_dos = vacc_dose_number,
-         vac_dat = vacc_occurence_date, 
-         vac_typ = vacc_product_name) %>%
-  # Keep only vaccinations administered after 1st December 2020 (when rollout began) and 14 days before max test date
-  filter(vac_dat >= "2020-12-01" & vac_dat <= (max(df_neg$tes_dat - days(14)))) %>% 
-  # Rename vaccine types
-  mutate(vac_typ = case_when(vac_typ == "Covid-19 Vaccine AstraZeneca" ~ "AZ",
-                             vac_typ == "Covid-19 mRNA Vaccine Pfizer" ~ "PB",
-                             vac_typ == "Covid-19 mRNA Vaccine Moderna" ~ "Mo",
-                             TRUE ~ "Unknown")) %>% 
-  # Remove duplicates (by EAVE_LINKNO --AND-- dose number)
-  group_by(vac_dos) %>% 
-  filter(!duplicated(EAVE_LINKNO)) %>% 
-  ungroup %>% 
-  # Remove rows with missing info
-  filter(!is.na(vac_dos) & !is.na(vac_dat) & !is.na(vac_typ)) %>% 
-  # Transpose (one row per individual)
-  pivot_wider(id_cols = EAVE_LINKNO,
-              names_from = vac_dos,
-              values_from = c(vac_dat, vac_typ)) %>% 
-  ## Flag vaccinations 1 & 2 or 2 & 3 <18 days apart
-  mutate(vac_gap_1 = as.numeric(date(vac_dat_2) - date(vac_dat_1)), 
-         vac_gap_2 = as.numeric(date(vac_dat_3) - date(vac_dat_2)),
-         vac_incon = ifelse(vac_gap_1 <19 & !is.na(vac_gap_1), 1, 0)) %>% 
-  ## Flag first dose ==PB or Mo, but second dose == AZ
-  mutate(vac_incon = ifelse((vac_typ_1 == "PB" | vac_typ_1 == "Mo") & vac_typ_2 == "AZ", 1, 0),
-         ## Flag no record of earlier doses
-         vac_incon = ifelse((is.na(vac_typ_1) & (!is.na(vac_typ_2) | !is.na(vac_typ_3) | !is.na(vac_typ_4))) |    # No first dose, but subsequent doses
-                              ((is.na(vac_typ_1) | is.na(vac_typ_2)) & (!is.na(vac_typ_3) | !is.na(vac_typ_4))) |    # No first or second dose, but subsequent doses
-                              ((is.na(vac_typ_1) | is.na(vac_typ_2) | is.na(vac_typ_3)) & !is.na(vac_typ_4)), 1, 0)) %>%  # No first, second, or third dose, but subsequent doses
-  ## Keep data with no inconsistencies
-  filter(vac_incon == 0) %>% 
-  ## Transpose to long form 
-  pivot_longer(cols = c(vac_dat_1:vac_dat_7), # columns that should pivot from wide to long (unquoted)
-               names_to = "vac_dos", # name of the new category column as a quoted string
-               values_to = "vac_dat") %>% # name of the new value column as a quoted string)
+  ## Select vars of interest
+  dplyr::select(c(EAVE_LINKNO, starts_with("date_vacc")))
+
+## Pivot longer
+vac <- pivot_longer(vac,
+                    cols = date_vacc_1:date_vacc_wb,
+                    values_to = "vac_dat")
+
+## Clean up
+vac <- vac %>% 
+  select(-name) %>% 
   filter(!is.na(vac_dat)) %>% 
-  select(EAVE_LINKNO, vac_dat)
+  filter(vac_dat <= "2022-10-20")
 
+## Remove files
 rm(vac_raw)
-
 
 # 2. Function - Time varying propensity score matching ----
 
@@ -485,7 +458,7 @@ setwd("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/2. Matching/2. Matched 
 df_neg_matching <- ps_match(df_neg, 
                             control_type = "neg",
                             start = wild_start, 
-                            end = omicron_end) # 54.4% of positive cases matched to a control
+                            end = omicron_end) # 54.3% of positive cases matched to a control
 
 ### Select matched pairs and export
 df_neg_m <- df_neg_matching$all_matches
@@ -504,7 +477,7 @@ rm(df_neg_matching, df_neg_m, df_neg_all)
 df_nt_matching <- ps_match(df_nt, 
                            control_type = "nt",
                            start = wild_start,
-                           end = omicron_end) # 84.4% of positive cases matched to a control
+                           end = omicron_end) # 83.6% of positive cases matched to a control
 
 ### Select matched pairs
 df_nt_m <- df_nt_matching$all_matches

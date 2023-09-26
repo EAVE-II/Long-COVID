@@ -32,7 +32,7 @@ chemicals_of_interest <- c("Edoxaban") # We decided not to include analysis of c
 prepare_GP_data <- function(df, cluster){ # e.g. df = df_neg or df = df_nt
   # e.g. cluster = T if creating a df to be used for cluster analysis
   
-  ## Read in GP data supplied by Albasoft
+  ## Read in GP data supplied by Albasoft for all individuals in df
   GP_raw <- readRDS("/conf/EAVE/GPanalysis/analyses/long_covid/data/longcovid_261022.rds") 
   
   ## Clean up GP data
@@ -271,70 +271,23 @@ prepare_interactions_data <- function(df, cluster){ # e.g. df = df_neg or df = d
       filter(icu_dat <= max(df$tes_dat))
     
     # Vaccinations
-    vac_raw <- readRDS("/conf/EAVE/GPanalysis/data/cleaned_data/C19vaccine_dvprod_cleaned.rds") 
+    vac_raw <- readRDS("/conf/EAVE/GPanalysis/data/temp/vaccine_cleaned.rds")  # cleaned file prepared by Vera @ PHS
     
-    ## Clean up vaccinations data
+    ## Prepare vac data
     vac <- vac_raw %>% 
-      # Select variables of interest
-      select(EAVE_LINKNO, 
-             vac_dos = vacc_dose_number,
-             vac_dat = vacc_occurence_date, 
-             vac_typ = vacc_product_name) %>%
-      # Keep only vaccinations administered after 1st December 2020 (when rollout began) and 14 days before max test date
-      filter(vac_dat >= "2020-12-01" & vac_dat <= (max(df$tes_dat - days(14)))) %>% 
-      # Rename vaccine types
-      mutate(vac_typ = case_when(vac_typ == "Covid-19 Vaccine AstraZeneca" ~ "AZ",
-                                 vac_typ == "Covid-19 mRNA Vaccine Pfizer" ~ "PB",
-                                 vac_typ == "Covid-19 mRNA Vaccine Moderna" ~ "Mo",
-                                 TRUE ~ "Unknown")) %>% 
-      # Remove duplicates (by EAVE_LINKNO --AND-- dose number)
-      group_by(vac_dos) %>% 
-      filter(!duplicated(EAVE_LINKNO)) %>% 
-      ungroup %>% 
-      # Remove rows with missing info
-      filter(!is.na(vac_dos) & !is.na(vac_dat) & !is.na(vac_typ)) %>% 
-      # Transpose (one row per individual)
-      pivot_wider(id_cols = EAVE_LINKNO,
-                  names_from = vac_dos,
-                  values_from = c(vac_dat, vac_typ)) %>% 
-      mutate(vac_incon = 0)
+      ## Select vars of interest
+      dplyr::select(c(EAVE_LINKNO, starts_with("date_vacc")))
     
-    if("vac_dat_3" %in% colnames(vac)){
-      ## Flag vaccinations 1 & 2 or 2 & 3 <18 days apart
-      vac <- vac %>% 
-        mutate(vac_gap_1 = as.numeric(date(vac_dat_2) - date(vac_dat_1)), 
-             vac_gap_2 = as.numeric(date(vac_dat_3) - date(vac_dat_2)),
-             vac_incon = ifelse(vac_gap_1 <19 & !is.na(vac_gap_1), 1, 0))
-    }
+    ## Pivot longer
+    vac <- pivot_longer(vac,
+                        cols = date_vacc_1:date_vacc_wb,
+                        values_to = "vac_dat")
     
-    if("vac_typ_4" %in% colnames(vac)){  
-      vac <- vac %>% 
-    ## Flag first dose ==PB or Mo, but second dose == AZ
-      mutate(vac_incon = ifelse((vac_typ_1 == "PB" | vac_typ_1 == "Mo") & vac_typ_2 == "AZ", 1, 0),
-             ## Flag no record of earlier doses
-             vac_incon = ifelse((is.na(vac_typ_1) & (!is.na(vac_typ_2) | !is.na(vac_typ_3) | !is.na(vac_typ_4))) |    # No first dose, but subsequent doses
-                                  ((is.na(vac_typ_1) | is.na(vac_typ_2)) & (!is.na(vac_typ_3) | !is.na(vac_typ_4))) |    # No first or second dose, but subsequent doses
-                                  ((is.na(vac_typ_1) | is.na(vac_typ_2) | is.na(vac_typ_3)) & !is.na(vac_typ_4)), 1, 0))   # No first, second, or third dose, but subsequent doses
-    }
-      
+    ## Clean up
     vac <- vac %>% 
-      ## Keep data with no inconsistencies
-      filter(vac_incon == 0) 
-    
-    ## Get max vac_dat column
-    max_vac_dat_col <- colnames(vac)[which(colnames(vac) == "vac_typ_1")-1]
-    
-    vac <- vac %>% 
-      ## Transpose to long form 
-      pivot_longer(cols = c(vac_dat_1:max_vac_dat_col), # columns that should pivot from wide to long (unquoted)
-                   names_to = "vac_dos", # name of the new category column as a quoted string
-                   values_to = "vac_dat") # name of the new value column as a quoted string)
-    
-    vac <- vac %>% 
+      select(-name) %>% 
       filter(!is.na(vac_dat)) %>% 
-      select(EAVE_LINKNO, vac_dat)
-    
-    rm(vac_raw)
+      filter(vac_dat <= "2022-10-20")
     
     
     ## Prepare counts
@@ -870,20 +823,20 @@ plot_model_results <- function(dep_vars, follow_up, labels, include_extremes, df
     # Save in mods
     mods <- rbind(mods, mod_output)
     
-    # Goodness of fit test
-    # https://stats.oarc.ucla.edu/r/dae/poisson-regression/
-    gf <- cbind(res.deviance = mod$deviance, 
-                deg_free = mod$df.residual,
-                p = pchisq(mod$deviance, mod$df.residual, lower.tail=FALSE))
-    goodness_of_fit <- rbind(goodness_of_fit, gf)
+    ## Goodness of fit test
+    ## https://stats.oarc.ucla.edu/r/dae/poisson-regression/
+    #gf <- cbind(res.deviance = mod$deviance, 
+    #            deg_free = mod$df.residual,
+    #            p = pchisq(mod$deviance, mod$df.residual, lower.tail=FALSE))
+    #goodness_of_fit <- rbind(goodness_of_fit, gf)
     
     
-    ## Estimate overdispersion
-    ### Guidance: https://towardsdatascience.com/adjust-for-overdispersion-in-poisson-regression-4b1f52baa2f1 
-    od_val <- sum(residuals(mod, type ="pearson")^2)/mod$df.residual
-    od_sig <- pchisq(mod$deviance, mod$df.residual, lower.tail=F)
-    od <- c(od_val, od_sig)
-    overdispersion <- rbind(overdispersion, od)
+    ### Estimate overdispersion
+    #### Guidance: https://towardsdatascience.com/adjust-for-overdispersion-in-poisson-regression-4b1f52baa2f1 
+    #od_val <- sum(residuals(mod, type ="pearson")^2)/mod$df.residual
+    #od_sig <- pchisq(mod$deviance, mod$df.residual, lower.tail=F)
+    #od <- c(od_val, od_sig)
+    #overdispersion <- rbind(overdispersion, od)
   }
   
   mods$labs <- labels
@@ -924,14 +877,14 @@ plot_model_results <- function(dep_vars, follow_up, labels, include_extremes, df
   print("Coefficients and confidence intervals (robust SEs)")
   print(mods)
   
-  print("Goodness of fit")
-  print("Statistically significant chi-square (p < .05) indicates that the data do not fit the model well")
-  print(goodness_of_fit)
-  
-  
-  print("Checks for overdispersion (value, significance)")
-  print("Values significantly > 1 suggest overdispersion")
-  print(overdispersion)
+  #print("Goodness of fit")
+  #print("Statistically significant chi-square (p < .05) indicates that the data do not fit the model well")
+  #print(goodness_of_fit)
+  #
+  #
+  #print("Checks for overdispersion (value, significance)")
+  #print("Values significantly > 1 suggest overdispersion")
+  #print(overdispersion)
   
   return(list("table" = mods, "plot" = fig))
   
@@ -945,7 +898,7 @@ analysis <- function(df_path, # e.g. "/conf/EAVE/GPanalysis/analyses/long_covid/
   
   # Read in data
   df <- readRDS(df_path)
-  
+
   # Remove unnecessary variables
   df <- df %>% 
     select(-c(subclass)) 
@@ -961,7 +914,7 @@ analysis <- function(df_path, # e.g. "/conf/EAVE/GPanalysis/analyses/long_covid/
   df_vars <- set_dep_vars(df$GP, df$pis, df$chems, comparison) 
   
   # Run matched analysis, create and export plots
-  ## 4-12 weeks
+  # 4-12 weeks
   print("Preparing plot and table - 4-12 weeks")
   res_4 <- plot_model_results(dep_vars = df_vars$vars_4,
                               follow_up = df$GP$follow_up_4, 
@@ -1020,34 +973,34 @@ analysis <- function(df_path, # e.g. "/conf/EAVE/GPanalysis/analyses/long_covid/
   write.csv(pis_12$table, paste0("PIS 12-26 weeks - ", comparison, " - matched sample - ", period, ".csv"), row.names = F)
   
   
-  ### Chemical substances 4-12 weeks
-  print("Preparing chemical substances plot and table - 4-12 weeks")
-  chems_4  <- plot_model_results(dep_vars = df_vars$chems_4,
-                                 follow_up = df$GP$follow_up_4, 
-                                 labels = df_vars$labs_chems_4, 
-                                 include_extremes = F,
-                                 df = df$GP)
+  #### Chemical substances 4-12 weeks
+  #print("Preparing chemical substances plot and table - 4-12 weeks")
+  #chems_4  <- plot_model_results(dep_vars = df_vars$chems_4,
+  #                               follow_up = df$GP$follow_up_4, 
+  #                               labels = df_vars$labs_chems_4, 
+  #                               include_extremes = F,
+  #                               df = df$GP)
+  #
+  #ggsave(paste0("Chems 4-12 weeks - ", comparison, " - matched sample - ", period, ".pdf"),
+  #       plot = chems_4$plot, width = 6, height = 8, units = "in", dpi = 300)
+  #
+  #print("Writing to file")
+  #write.csv(chems_4$table, paste0("Chems 4-12 weeks - ", comparison, " - matched sample - ", period, ".csv"), row.names = F)
+  #
+  #
+  #### Chemical substances >12-26 weeks
+  #print("Preparing chemical substances plot and table - 12-26 weeks")
+  #chems_12  <- plot_model_results(dep_vars = df_vars$chems_12,
+  #                                follow_up = df$GP$follow_up_12, 
+  #                                labels = df_vars$labs_chems_12, 
+  #                                include_extremes = F,
+  #                                df = df$GP)
+  #
+  #ggsave(paste0("Chems 12-26 weeks - ", comparison, " - matched sample - ", period, ".pdf"),
+  #       plot = chems_12$plot, width = 6, height = 8, units = "in", dpi = 300)
   
-  ggsave(paste0("Chems 4-12 weeks - ", comparison, " - matched sample - ", period, ".pdf"),
-         plot = chems_4$plot, width = 6, height = 8, units = "in", dpi = 300)
-  
-  print("Writing to file")
-  write.csv(chems_4$table, paste0("Chems 4-12 weeks - ", comparison, " - matched sample - ", period, ".csv"), row.names = F)
-  
-  
-  ### Chemical substances >12-26 weeks
-  print("Preparing chemical substances plot and table - 12-26 weeks")
-  chems_12  <- plot_model_results(dep_vars = df_vars$chems_12,
-                                  follow_up = df$GP$follow_up_12, 
-                                  labels = df_vars$labs_chems_12, 
-                                  include_extremes = F,
-                                  df = df$GP)
-  
-  ggsave(paste0("Chems 12-26 weeks - ", comparison, " - matched sample - ", period, ".pdf"),
-         plot = chems_12$plot, width = 6, height = 8, units = "in", dpi = 300)
-  
-  print("Writing to file")
-  write.csv(chems_12$table, paste0("Chems 12-26 weeks - ", comparison, " - matched sample - ", period, ".csv"), row.names = F)
+  #print("Writing to file")
+  #write.csv(chems_12$table, paste0("Chems 12-26 weeks - ", comparison, " - matched sample - ", period, ".csv"), row.names = F)
   
 }
 
@@ -1075,7 +1028,7 @@ cluster_prep <- function(df){
 
 
 ## (i) df derived using PCR test results (remove positive cases duplicated for use as controls in matched analysis)
-## NB the analysis below removes 'not yet tested' form the dataset - so only positive and negative cases remain (but that's ok)
+## NB the analysis below removes 'not yet tested' from the dataset - so only positive and negative cases remain (but that's ok)
 df_pcr_raw <- readRDS("/conf/EAVE/GPanalysis/analyses/long_covid/data/LongCOVID_linked.rds") %>% 
   filter(pos_control == 0) # N = 5,056,071
 df_pcr <- cluster_prep(df_pcr_raw)

@@ -21,6 +21,7 @@ library(wordcloud) # word-cloud generator
 
 # Read in data ----------
 df <- readRDS("/conf/EAVE/GPanalysis/analyses/long_covid/data/free_text.rds") # redacted sample of GP free text wint long COVID Read codes supplied by Albasoft
+# df <- read.delim("/conf/EAVE/GPanalysis/analyses/long_covid/data/Sick notes - free text.txt", header = TRUE, sep = "\t", dec = ".") # sample of sick notes text
 colnames(df) <- "Txt"
 df$Txt <- as.character(df$Txt)
 
@@ -36,7 +37,7 @@ corp <- corpus(df, text_field = "Txt")
 ## Identify words as tokens
 doc.tokens <- tokens(corp, what = "word")
 
-## Remove custom words and stopwords (remove "c" becuase it's used as shorthand for several things (including "covid"); however, "long covid" always spelled out)
+## Remove custom words and stopwords
 doc.tokens <- tokens_remove(doc.tokens, pattern=c("c", stopwords('en')), padding = TRUE) 
 
 ## Collect n-grams
@@ -50,7 +51,8 @@ topfeatures(doc.dfm, 100) # Top 100 n-grams
 top100 <- data.frame(ngram = labels(topfeatures(doc.dfm, 100)), count = topfeatures(doc.dfm, 100))
 
 ## Export
-setwd("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/4. Free text")
+#setwd("/conf/EAVE/GPanalysis/analyses/long_covid/outputs/4. Free text")
+setwd("/conf/EAVE/GPanalysis/analyses/long_covid/code_review/Review outputs/4. Free text")
 write_csv(top100, "top_100_ngrams.csv")
 write_csv(df, "free_text_cleaned.csv")
 
